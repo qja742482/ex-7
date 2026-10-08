@@ -148,4 +148,352 @@
         const SUPABASE_ANON_KEY = 'sb_publishable_Szvd5jiuc06UAASsp5LLwA_Vt1HIAYF'; // 공개용 키만 사용
         const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-        const EMPTY_STATE =
+        const EMPTY_STATE = () => ({ plans: [], planHistories: [], todos: [], executionLogs: [], improvements: [] });
+        let state = EMPTY_STATE();
+        let currentUser = null;
+
+        // 로그인한 사람의 자료만 불러옴
+        async function loadData() {
+            const { data, error } = await sb.from('diary').select('state').maybeSingle();
+            if (error) { alert('자료를 불러오지 못했습니다.'); return EMPTY_STATE(); }
+            return data && data.state && data.state.plans ? data.state : EMPTY_STATE();
+        }
+
+        // 저장: 항상 내 user_id 로 저장
+        async function saveData(s) {
+            if (!currentUser) return;
+            const { error } = await sb.from('diary').upsert({ user_id: currentUser.id, state: s, updated_at: new Date().toISOString() });
+            if (error) alert('저장하지 못했습니다. 다시 시도해 주세요.');
+        }
+
+        // --- 카드 1: 가입 / 로그인 / 로그아웃 ---
+        function setAuthMsg(text) { document.getElementById('auth-msg').textContent = text; }
+
+        async function handleSignup() {
+            const email = document.getElementById('auth-email').value.trim();
+            const password = document.getElementById('auth-password').value;
+            const { error } = await sb.auth.signUp({ email, password });
+            setAuthMsg(error ? '가입할 수 없습니다. 이미 가입된 이메일이거나 입력(비밀번호 6자 이상)을 확인해 주세요.' : '가입되었습니다. 로그인해 주세요.');
+        }
+
+        async function handleLogin() {
+            const email = document.getElementById('auth-email').value.trim();
+            const password = document.getElementById('auth-password').value;
+            const { error } = await sb.auth.signInWithPassword({ email, password });
+            if (error) setAuthMsg('이메일 또는 비밀번호가 맞지 않습니다.');
+            else document.getElementById('auth-password').value = '';
+        }
+
+        async function handleLogout() { await sb.auth.signOut(); }
+
+        // 로그인 상태 감지
+        sb.auth.onAuthStateChange((event, session) => {
+            const user = session ? session.user : null;
+            if ((user ? user.id : null) === (currentUser ? currentUser.id : null)) return;
+            setTimeout(async () => {
+                currentUser = user;
+                document.getElementById('auth-view').classList.toggle('hidden', !!user);
+                document.getElementById('app-view').classList.toggle('hidden', !user);
+                state = user ? await loadData() : EMPTY_STATE();
+                initApp();
+            }, 0);
+        });
+
+        // JSON 파일 업로드로 가져오기
+        function importDataJSON(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    const d = JSON.parse(reader.result);
+                    if (!Array.isArray(d.plans)) throw new Error('bad');
+                    state = Object.assign(EMPTY_STATE(), d);
+                    saveData(state);
+                    initApp();
+                    alert('내 계정으로 가져왔습니다.');
+                } catch (err) { alert('올바른 JSON 파일이 아닙니다.'); }
+                e.target.value = '';
+            };
+            reader.readAsText(file);
+        }
+
+        // XSS 방지
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        function initApp() {
+            renderPlans();
+            renderTodos();
+            renderStats();
+            renderImprovements();
+        }
+
+        // --- 카드 1: 계획 관리 ---
+        function handleCreatePlan(e) {
+            e.preventDefault();
+            const newPlan = {
+                id: crypto.randomUUID(),
+                title: document.getElementById('plan-title').value,
+                period: document.getElementById('plan-period').value,
+                priority: parseInt(document.getElementById('plan-priority').value) || 0,
+                success_criterion: document.getElementById('plan-criterion').value,
+                estimated_hours: parseFloat(document.getElementById('plan-hours').value) || 0,
+                created_at: new Date().toISOString()
+            };
+            state.plans.push(newPlan);
+            saveData(state);
+            e.target.reset();
+            initApp();
+        }
+
+        function handleUpdatePlan(id) {
+            const plan = state.plans.find(p => p.id === id);
+            const newTitle = prompt("수정할 계획 제목:", plan.title);
+            if (!newTitle) return;
+
+            state.planHistories.push({
+                id: crypto.randomUUID(),
+                plan_id: plan.id,
+                title: plan.title,
+                priority: plan.priority,
+                success_criterion: plan.success_criterion,
+                estimated_hours: plan.estimated_hours,
+                updated_at: new Date().toISOString()
+            });
+
+            plan.title = newTitle;
+            saveData(state);
+            initApp();
+        }
+
+        function renderPlans() {
+            const container = document.getElementById('plans-container');
+            const selectContainer = document.getElementById('todo-plan-id');
+            container.innerHTML = '';
+            selectContainer.innerHTML = '<option value="">선택할 계획 없음</option>';
+
+            state.plans.forEach(plan => {
+                selectContainer.innerHTML += `<option value="${plan.id}">${escapeHtml(plan.title)}</option>`;
+                const histories = state.planHistories.filter(h => h.plan_id === plan.id);
+                
+                container.innerHTML += `
+                    <div class="border p-4 rounded-lg bg-slate-50">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <h3 class="font-bold text-lg">${escapeHtml(plan.title)}</h3>
+                                <p class="text-xs text-slate-500">기간: ${escapeHtml(plan.period)} | 우선순위: ${plan.priority} | 예상: ${plan.estimated_hours}h</p>
+                                <p class="text-sm mt-1">성공 기준: ${escapeHtml(plan.success_criterion)}</p>
+                            </div>
+                            <button onclick="handleUpdatePlan('${plan.id}')" class="text-xs bg-slate-200 hover:bg-slate-300 px-2 py-1 rounded">수정 (이력 남김)</button>
+                        </div>
+                        ${histories.length > 0 ? `
+                            <div class="mt-2 text-xs text-slate-400 border-t pt-1">
+                                <strong>[수정 전 이전 이력]:</strong> ${histories.map(h => escapeHtml(h.title)).join(', ')}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            });
+        }
+
+        // --- 카드 2 & 3: 할 일 및 실행 기록 ---
+        function handleCreateTodo(e) {
+            e.preventDefault();
+            const tags = document.getElementById('todo-tags').value.split(',').map(t => t.trim()).filter(Boolean);
+            const newTodo = {
+                id: crypto.randomUUID(),
+                plan_id: document.getElementById('todo-plan-id').value || null,
+                title: document.getElementById('todo-title').value,
+                due_date: document.getElementById('todo-due').value || null,
+                priority: parseInt(document.getElementById('todo-priority').value) || 0,
+                tags: tags,
+                estimated_hours: parseFloat(document.getElementById('todo-hours').value) || 0,
+                status: 'pending',
+                created_at: new Date().toISOString()
+            };
+            state.todos.push(newTodo);
+            saveData(state);
+            e.target.reset();
+            initApp();
+        }
+
+        function handleCompleteTodo(todoId) {
+            const existingLog = state.executionLogs.find(l => l.todo_id === todoId);
+            if (existingLog) {
+                alert("이미 완료 기록이 존재하는 할 일입니다.");
+                return;
+            }
+
+            const start = prompt("시작 시각 (YYYY-MM-DD HH:MM):", new Date().toISOString().slice(0, 16));
+            const end = prompt("끝난 시각 (YYYY-MM-DD HH:MM):", new Date().toISOString().slice(0, 16));
+            const actualHours = parseFloat(prompt("실제로 걸린 시간(시간 단위):", "1")) || 0;
+            const blockedReason = prompt("막혔던 이유 (없으면 빈칸):", "");
+
+            state.executionLogs.push({
+                id: crypto.randomUUID(),
+                todo_id: todoId,
+                start_time: start,
+                end_time: end,
+                actual_hours: actualHours,
+                blocked_reason: blockedReason,
+                created_at: new Date().toISOString()
+            });
+
+            const todo = state.todos.find(t => t.id === todoId);
+            if (todo) todo.status = 'completed';
+
+            saveData(state);
+            initApp();
+        }
+
+        function handleRevertTodo(todoId) {
+            state.executionLogs = state.executionLogs.filter(l => l.todo_id !== todoId);
+            const todo = state.todos.find(t => t.id === todoId);
+            if (todo) todo.status = 'pending';
+            saveData(state);
+            initApp();
+        }
+
+        function handleDeleteTodo(todoId) {
+            state.todos = state.todos.filter(t => t.id !== todoId);
+            state.executionLogs = state.executionLogs.filter(l => l.todo_id !== todoId);
+            saveData(state);
+            initApp();
+        }
+
+        function renderTodos() {
+            const container = document.getElementById('todos-container');
+            const keyword = document.getElementById('search-keyword').value.toLowerCase();
+            const filterStatus = document.getElementById('filter-status').value;
+            const sortCriterion = document.getElementById('sort-criterion').value;
+
+            let list = [...state.todos];
+
+            if (filterStatus !== 'all') {
+                list = list.filter(t => t.status === filterStatus);
+            }
+            if (keyword) {
+                list = list.filter(t => t.title.toLowerCase().includes(keyword));
+            }
+
+            list.sort((a, b) => {
+                if (sortCriterion === 'priority') return a.priority - b.priority;
+                if (sortCriterion === 'due_date') return new Date(a.due_date || '9999-12-31') - new Date(b.due_date || '9999-12-31');
+                return new Date(b.created_at) - new Date(a.created_at);
+            });
+
+            container.innerHTML = '';
+            list.forEach(todo => {
+                const log = state.executionLogs.find(l => l.todo_id === todo.id);
+                const isCompleted = todo.status === 'completed';
+
+                container.innerHTML += `
+                    <div class="border p-4 rounded-lg bg-white flex flex-col md:flex-row justify-between items-start md:items-center gap-2">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs px-2 py-0.5 rounded font-bold ${isCompleted ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">
+                                    ${isCompleted ? '완료' : '진행중'}
+                                </span>
+                                <h4 class="font-bold">${escapeHtml(todo.title)}</h4>
+                            </div>
+                            <p class="text-xs text-slate-500 mt-1">
+                                마감: ${todo.due_date ? new Date(todo.due_date).toLocaleString('ko-KR') : '없음'} | 
+                                우선순위: ${todo.priority} | 예상: ${todo.estimated_hours}h | 
+                                태그: ${todo.tags ? todo.tags.map(t => escapeHtml(t)).join(', ') : '없음'}
+                            </p>
+                            ${log ? `
+                                <div class="mt-2 text-xs bg-slate-50 p-2 rounded border">
+                                    <p class="font-semibold text-slate-700">[실제 실행 기록]</p>
+                                    <p>실제 소요: ${log.actual_hours}h \vert{} 막힌 이유: ${escapeHtml(log.blocked_reason) || '없음'}</p>
+                                </div>
+                            ` : ''}
+                        </div>
+                        <div class="flex gap-1 text-xs">
+                            ${!isCompleted ? 
+                                `<button onclick="handleCompleteTodo('${todo.id}')" class="bg-emerald-600 text-white px-3 py-1.5 rounded">완료 처리</button>` : 
+                                `<button onclick="handleRevertTodo('${todo.id}')" class="bg-slate-500 text-white px-3 py-1.5 rounded">되돌리기</button>`
+                            }
+                            <button onclick="handleDeleteTodo('${todo.id}')" class="bg-rose-500 text-white px-3 py-1.5 rounded">삭제</button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        // --- 카드 4: 돌아보기 (See) 계산 ---
+        function renderStats() {
+            const planCount = state.plans.length;
+            const completedCount = state.todos.filter(t => t.status === 'completed').length;
+
+            const nowTime = new Date().getTime();
+            const delayedCount = state.todos.filter(t => {
+                if (t.status === 'completed' || !t.due_date) return false;
+                return new Date(t.due_date).getTime() < nowTime;
+            }).length;
+
+            const blockedCount = state.executionLogs.filter(l => l.blocked_reason && l.blocked_reason.trim() !== '').length;
+
+            const totalEstimated = state.todos.reduce((sum, t) => sum + (Number(t.estimated_hours) || 0), 0);
+            const totalActual = state.executionLogs.reduce((sum, l) => sum + (Number(l.actual_hours) || 0), 0);
+            const diff = totalActual - totalEstimated;
+
+            document.getElementById('stat-plan-count').innerText = planCount;
+            document.getElementById('stat-completed-count').innerText = completedCount;
+            document.getElementById('stat-delayed-count').innerText = delayedCount;
+            document.getElementById('stat-blocked-count').innerText = blockedCount;
+            document.getElementById('stat-time-diff').innerText = `${diff >= 0 ? '+' : ''}${diff.toFixed(1)}시간`;
+        }
+
+        function saveImprovement() {
+            const input = document.getElementById('improvement-input');
+            if (!input.value) return;
+            state.improvements.push({ id: crypto.randomUUID(), content: input.value });
+            saveData(state);
+            input.value = '';
+            initApp();
+        }
+
+        function renderImprovements() {
+            const container = document.getElementById('improvement-list');
+            container.innerHTML = state.improvements.map(i => `<li>${escapeHtml(i.content)}</li>`).join('');
+        }
+
+        function scrollToSection(id) {
+            document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // --- 카드 5: 내보내기 & 계정 삭제 기능 ---
+        function exportDataJSON() {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state, null, 2));
+            const downloadAnchor = document.createElement('a');
+            downloadAnchor.setAttribute("href", dataStr);
+            downloadAnchor.setAttribute("download", `plan_do_see_data_${new Date().toISOString().slice(0,10)}.json`);
+            document.body.appendChild(downloadAnchor);
+            downloadAnchor.click();
+            downloadAnchor.remove();
+        }
+
+        // 새로 추가된 계정 및 데이터 삭제 함수 (T07-C134 만족)
+        async function handleDeleteAccount() {
+            const confirmDelete = confirm("정말로 계정 및 모든 다이어리 데이터를 삭제하시겠습니까?\n이 작업은 취소할 수 없습니다.");
+            if (!confirmDelete) return;
+
+            if (!currentUser) return;
+
+            // DB에서 해당 유저의 데이터 삭제
+            const { error } = await sb.from('diary').delete().eq('user_id', currentUser.id);
+            if (error) {
+                alert("데이터 삭제에 실패했습니다: " + error.message);
+                return;
+            }
+
+            // 삭제 후 로그아웃 처리
+            await sb.auth.signOut();
+            alert("계정 데이터가 성공적으로 삭제 처리되었습니다.");
+        }
+    </script>
+</body>
+</html>
