@@ -135,8 +135,8 @@
 
     <script>
         // === 카드 1~4: Supabase 연결 (인증 + 내 자료만 저장/조회) ===
-        const SUPABASE_URL = '여기에_프로젝트_URL을_붙여넣기';
-        const SUPABASE_ANON_KEY = '여기에_anon_공개키를_붙여넣기'; // 공개용 키만. service_role/secret 키는 절대 넣지 않기
+        const SUPABASE_URL = 'https://spffzwkywnswhlhsumlx.supabase.co';
+        const SUPABASE_ANON_KEY = 'sb_publishable_Szvd5jiuc06UAASsp5LLwA_Vt1HIAYF'; // 공개용 키만. service_role/secret 키는 절대 넣지 않기
         const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         const EMPTY_STATE = () => ({ plans: [], planHistories: [], todos: [], executionLogs: [], improvements: [] });
